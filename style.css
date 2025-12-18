@@ -281,6 +281,19 @@ button:disabled {
   transform: none !important;
 }
 
+
+
+
+/*css do traçado de acompanhamento*/
+#line-active,
+.line-active {
+  background: rgba(255, 215, 120, 0.25);
+  padding: 4px;
+  border-radius: 6px;
+}
+
+
+
 /* Status */
 .status {
   display: flex;

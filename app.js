@@ -1,199 +1,262 @@
-// ========================================
-// Text-to-Speech App
-// Using Browser Web Speech API
-// ========================================
+// =======================================================
+// Voz Natural - Leitor de Script com Web Speech API (Estável)
+// Parser [Personagem] + Highlight + Pause/Resume confiável
+// =======================================================
 
-// DOM Element References
-const textInput = document.getElementById("text-input");
+// =======================
+// DOM ELEMENTS
+// =======================
+const textInput   = document.getElementById("text-input");
 const voiceSelect = document.getElementById("voice-select");
-const speedSlider = document.getElementById("speed-slider");
-const pitchSlider = document.getElementById("pitch-slider");
-const speedValue = document.getElementById("speed-value");
-const pitchValue = document.getElementById("pitch-value");
-const speakBtn = document.getElementById("speak-btn");
-const stopBtn = document.getElementById("stop-btn");
-const charCount = document.getElementById("char-count");
-const status = document.getElementById("status");
-const statusText = document.getElementById("status-text");
+const speakBtn    = document.getElementById("speak-btn");
+const stopBtn     = document.getElementById("stop-btn");
+const charCount   = document.getElementById("char-count");
+const statusText  = document.getElementById("status-text");
+const themeToggle = document.getElementById("theme-toggle");
+const scriptDiv   = document.getElementById("script");
 
-// ===== MODO CLARO/ESCURO =====
-const themeToggle = document.getElementById('theme-toggle');
+// =======================
+// ESTADO GLOBAL DA LEITURA
+// =======================
+let isReading = false;
+let currentBlockIndex = 0;  // índice da linha atual
+let allBlocks = [];         // todas as linhas do script
+let currentUtterance = null;
+
+// =======================
+// TEMA
+// =======================
 const body = document.body;
-const THEME_KEY = 'voz-natural-theme';
+const THEME_KEY = "voz-natural-theme";
 
 function applyTheme(theme) {
-  if (theme === 'light') {
-    body.classList.add('light');
-    themeToggle.textContent = '☀️';
-  } else {
-    body.classList.remove('light');
-    themeToggle.textContent = '🌙';
-  }
+  body.classList.toggle("light", theme === "light");
+  themeToggle.textContent = theme === "light" ? "☀️" : "🌙";
 }
 
-// Carrega preferência salva ou respeita o sistema
 function loadTheme() {
   const saved = localStorage.getItem(THEME_KEY);
-  if (saved) {
-    applyTheme(saved);
-  } else {
-    // Respeita preferência do sistema (escuro se o user usa dark mode no SO)
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    applyTheme(prefersDark ? 'dark' : 'light');
-  }
+  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  applyTheme(saved || (prefersDark ? "dark" : "light"));
 }
 
-// Toggle ao clicar
-themeToggle.addEventListener('click', () => {
-  const newTheme = body.classList.contains('light') ? 'dark' : 'light';
+themeToggle.addEventListener("click", () => {
+  const newTheme = body.classList.contains("light") ? "dark" : "light";
   applyTheme(newTheme);
   localStorage.setItem(THEME_KEY, newTheme);
 });
 
-// Detecta mudança no sistema (ex: user muda no Windows)
-window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-  if (!localStorage.getItem(THEME_KEY)) { // só se não tiver preferência manual
-    applyTheme(e.matches ? 'dark' : 'light');
-  }
-});
-
-// Carrega o tema ao abrir
-loadTheme();
-
-
-// Web Speech API
+// =======================
+// WEB SPEECH API - VOZES
+// =======================
 const synth = window.speechSynthesis;
 let voices = [];
 
-// Load available voices from the browser
 function loadVoices() {
-  // Get voices from the speech synthesis
   voices = synth.getVoices();
 
-  // If no voices yet, wait for them to load
   if (voices.length === 0) {
+    voiceSelect.innerHTML = '<option value="">Carregando vozes...</option>';
     return;
   }
 
-  // Clear the dropdown
-  voiceSelect.innerHTML = "";
+  voiceSelect.innerHTML = '<option value="">Selecione uma voz</option>';
 
-  // Populate dropdown with voice options
-  voices.forEach((voice, index) => {
+  const ptVoices = voices.filter(v => v.lang.includes("pt"));
+  const otherVoices = voices.filter(v => !v.lang.includes("pt"));
+
+  ptVoices.sort((a, b) => {
+    if (a.name.toLowerCase().includes("google") && !b.name.toLowerCase().includes("google")) return -1;
+    if (b.name.toLowerCase().includes("google") && !a.name.toLowerCase().includes("google")) return 1;
+    return 0;
+  });
+
+  ptVoices.forEach(voice => {
     const option = document.createElement("option");
-    option.value = index;
+    option.value = voice.name;
+    option.textContent = `${voice.name} (${voice.lang}) ${voice.name.toLowerCase().includes("google") ? "(Google - Top)" : ""}`;
+    voiceSelect.appendChild(option);
+  });
+
+  if (ptVoices.length > 0 && otherVoices.length > 0) {
+    const sep = document.createElement("option");
+    sep.disabled = true;
+    sep.textContent = "── Outras línguas ──";
+    voiceSelect.appendChild(sep);
+  }
+
+  otherVoices.forEach(voice => {
+    const option = document.createElement("option");
+    option.value = voice.name;
     option.textContent = `${voice.name} (${voice.lang})`;
     voiceSelect.appendChild(option);
   });
 
-  console.log(`Loaded ${voices.length} voices`);
+  const best = ptVoices.find(v => v.name.toLowerCase().includes("google"));
+  if (best) voiceSelect.value = best.name;
+
+  statusText.textContent = `Vozes carregadas: ${voices.length}`;
 }
 
-// Update character counter
-function updateCharCount() {
-  const count = textInput.value.length;
-  charCount.textContent = count;
+// =======================
+// PARSER DE SCRIPT
+// =======================
+function parseScript(text) {
+  const lines = text.split("\n").filter(l => l.trim() !== "");
+  return lines.map((line, i) => {
+    const match = line.match(/^\[([^\]]+)\]\s*(.+)$/);
+    if (match) {
+      return { id: i, character: match[1].trim(), text: match[2].trim() };
+    }
+    return { id: i, character: "padrão", text: line.trim() };
+  });
 }
 
-// Update slider value displays
-function updateSliderValues() {
-  speedValue.textContent = speedSlider.value;
-  pitchValue.textContent = pitchSlider.value;
+// =======================
+// RENDER E HIGHLIGHT
+// =======================
+function renderScript(blocks) {
+  scriptDiv.innerHTML = "";
+  blocks.forEach(b => {
+    const p = document.createElement("p");
+    p.id = `line-${b.id}`;
+    p.innerHTML = `<strong>[${b.character.toUpperCase()}]</strong> ${b.text}`;
+    scriptDiv.appendChild(p);
+  });
 }
 
-// Speak the text
-function speak() {
-  // Stop any ongoing speech
-  if (synth.speaking) {
-    synth.cancel();
+function highlightLine(id) {
+  document.querySelectorAll("#script p").forEach(p => p.classList.remove("line-active"));
+  const line = document.getElementById(`line-${id}`);
+  if (line) {
+    line.classList.add("line-active");
+    line.scrollIntoView({ behavior: "smooth", block: "center" });
   }
+}
 
-  // Get the text
-  const text = textInput.value.trim();
+// =======================
+// FALA DE UMA LINHA
+// =======================
+function speakBlock(block) {
+  synth.cancel(); // limpa qualquer fala anterior
 
-  if (!text) {
-    alert("Please enter some text to speak");
-    return;
-  }
+  const utterance = new SpeechSynthesisUtterance(block.text);
+  currentUtterance = utterance;
 
-  // Create utterance
-  const utterance = new SpeechSynthesisUtterance(text);
+  const selectedVoiceName = voiceSelect.value;
+  const voice = voices.find(v => v.name === selectedVoiceName);
+  if (voice) utterance.voice = voice;
 
-  // Set voice
-  const selectedVoiceIndex = voiceSelect.value;
-  if (selectedVoiceIndex !== "") {
-    utterance.voice = voices[selectedVoiceIndex];
-  }
-
-  // Set parameters
-  utterance.rate = parseFloat(speedSlider.value);
-  utterance.pitch = parseFloat(pitchSlider.value);
+  utterance.rate = 1;
+  utterance.pitch = 1;
   utterance.volume = 1.0;
 
-  // Event handlers
   utterance.onstart = () => {
-    status.classList.add("speaking");
-    statusText.textContent = "Speaking...";
+    statusText.textContent = "Falando...";
     speakBtn.disabled = true;
-    stopBtn.disabled = false;
   };
 
   utterance.onend = () => {
-    status.classList.remove("speaking");
-    statusText.textContent = "Ready";
-    speakBtn.disabled = false;
-    stopBtn.disabled = true;
+    statusText.textContent = "Linha concluída";
+    currentUtterance = null;
   };
 
-  utterance.onerror = (event) => {
-    console.error("Speech synthesis error:", event);
-    status.classList.remove("speaking");
-    statusText.textContent = "Error occurred";
-    speakBtn.disabled = false;
-    stopBtn.disabled = true;
+  utterance.onerror = (e) => {
+    console.error("Erro na fala:", e);
+    statusText.textContent = "Erro na linha";
+    currentUtterance = null;
   };
 
-  // Speak!
   synth.speak(utterance);
-
-  console.log("Speaking:", text.substring(0, 50) + "...");
 }
 
-// Stop speaking
-function stop() {
-  synth.cancel();
-  status.classList.remove("speaking");
-  statusText.textContent = "Stopped";
+// =======================
+// LEITURA SEQUENCIAL COM PAUSE/RESUME ESTÁVEL
+// =======================
+async function readScript() {
+  if (isReading) {
+    // Se já está lendo, pausa ou resume
+    if (currentUtterance) {
+      synth.cancel();
+    }
+    isReading = false;
+    speakBtn.disabled = false;
+    stopBtn.textContent = "⏸ Pause";
+    statusText.textContent = "Parado";
+    return;
+  }
+
+  const text = textInput.value.trim();
+  if (!text) {
+    statusText.textContent = "Digite um script!";
+    return;
+  }
+
+  allBlocks = parseScript(text);
+  renderScript(allBlocks);
+
+  currentBlockIndex = 0;
+  isReading = true;
+  speakBtn.disabled = true;
+  stopBtn.disabled = false;
+  stopBtn.textContent = "⏸ Pause";
+  statusText.textContent = "Iniciando leitura...";
+
+  while (currentBlockIndex < allBlocks.length && isReading) {
+    const block = allBlocks[currentBlockIndex];
+    highlightLine(block.id);
+    speakBlock(block);
+
+    // Espera a fala terminar
+    await new Promise(resolve => {
+      const check = setInterval(() => {
+        if (!synth.speaking || !isReading) {
+          clearInterval(check);
+          resolve();
+        }
+      }, 100);
+    });
+
+    currentBlockIndex++;
+  }
+
+  // Fim
+  isReading = false;
   speakBtn.disabled = false;
   stopBtn.disabled = true;
+  statusText.textContent = "Leitura concluída!";
 }
 
-// Set up event listeners
-function init() {
-  console.log("Text-to-Speech App initialized");
+// =======================
+// EVENTOS
+// =======================
+speakBtn.addEventListener("click", readScript);
 
-  // Load voices
+stopBtn.addEventListener("click", () => {
+  if (!isReading) return;
+
+  isReading = false;
+  synth.cancel();
+  statusText.textContent = "Parado";
+  speakBtn.disabled = false;
+  stopBtn.textContent = "▶ Continuar";
+});
+
+// Atualiza contador
+textInput.addEventListener("input", () => {
+  charCount.textContent = textInput.value.length;
+});
+
+// =======================
+// INIT
+// =======================
+document.addEventListener("DOMContentLoaded", () => {
+  loadTheme();
   loadVoices();
+  charCount.textContent = textInput.value.length;
 
-  // Voices load asynchronously in some browsers
-  synth.addEventListener("voiceschanged", loadVoices);
-
-  // Input events
-  textInput.addEventListener("input", updateCharCount);
-  speedSlider.addEventListener("input", updateSliderValues);
-  pitchSlider.addEventListener("input", updateSliderValues);
-
-  // Button events
-  speakBtn.addEventListener("click", speak);
-  stopBtn.addEventListener("click", stop);
-
-  // Initialize displays
-  updateCharCount();
-  updateSliderValues();
-
-  // Disable stop button initially
-  stopBtn.disabled = true;
-}
-
-// Initialize when DOM is ready
-document.addEventListener("DOMContentLoaded", init);
+  synth.onvoiceschanged = loadVoices;
+  setTimeout(loadVoices, 500);
+  setTimeout(loadVoices, 1000);
+  setTimeout(loadVoices, 2000);
+});
